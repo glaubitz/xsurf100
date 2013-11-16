@@ -78,6 +78,8 @@ static unsigned char version[] = "ax88796.c: Copyright 2005,2007 Simtec Electron
 
 #define AX_GPOC_PPDSET	BIT(6)
 
+static int ax_mii_init(struct net_device *dev);
+
 /* device private data */
 
 struct ax_device {
@@ -399,6 +401,10 @@ static int ax_open(struct net_device *dev)
 
 	netdev_dbg(dev, "open\n");
 
+	ret = ax_mii_init(dev);
+	if (ret)
+		goto failed_request_irq;
+
 	ret = request_irq(dev->irq, ax_ei_interrupt, ax->irqflags,
 			  dev->name, dev);
 	if (ret)
@@ -445,6 +451,10 @@ static int ax_close(struct net_device *dev)
 	phy_disconnect(ax->phy_dev);
 
 	free_irq(dev->irq, dev);
+
+	mdiobus_unregister(ax->mii_bus);
+	kfree(ax->mii_bus->irq);
+	free_mdio_bitbang(ax->mii_bus);
 	return 0;
 }
 
@@ -772,10 +782,6 @@ static int ax_init_dev(struct net_device *dev)
 
 	dev->netdev_ops = &ax_netdev_ops;
 	dev->ethtool_ops = &ax_ethtool_ops;
-
-	ret = ax_mii_init(dev);
-	if (ret)
-		goto out_irq;
 
 	ax_NS8390_init(dev, 0);
 
