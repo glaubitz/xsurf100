@@ -48,8 +48,11 @@
 /* force unsigned long back to 'void __iomem *' */
 #define ax_convert_addr(_a) ((void __force __iomem *)(_a))
 
-#define ei_inb(_a) readb(ax_convert_addr(_a))
-#define ei_outb(_v, _a) writeb(_v, ax_convert_addr(_a))
+#define ei_inb(_a) z_readb(ax_convert_addr(_a))
+#define ei_outb(_v, _a) z_writeb(_v, ax_convert_addr(_a))
+
+#define ei_inw(_a) z_readw(ax_convert_addr(_a))
+#define ei_outw(_v, _a) z_writew(_v, ax_convert_addr(_a))
 
 #define ei_inb_p(_a) ei_inb(_a)
 #define ei_outb_p(_v, _a) ei_outb(_v, _a)
@@ -83,6 +86,15 @@ static unsigned char version[] = "ax88796.c: Copyright 2005,2007 Simtec Electron
 /*  Base address of 8390 compatible registers in X-Surf 100 space */
 #define XS100_8390_BASE 0x800
 
+/* Longword-access area. Translated to 2 16-bit access cycles by the
+   X-Surf 100 FPGA */
+#define XS100_8390_DATA32_BASE 0x8000
+#define XS100_8390_DATA32_SIZE 0x2000
+/* Sub-Areas for fast data register access; addresses relative to area begin */
+#define XS100_8390_DATA_READ32_BASE 0x0880
+#define XS100_8390_DATA_WRITE32_BASE 0x0C80
+#define XS100_8390_DATA_AREA_SIZE 0x80
+
 static int ax_mii_init(struct net_device *dev);
 
 /* device private data */
@@ -107,12 +119,98 @@ struct ax_device {
 	u32 reg_offsets[0x20];
 
 	void __iomem *xs100irqstatusreg;
+	void __iomem *data_area;
+	void __iomem *xs100readfifo;
+	void __iomem *xs100writefifo;
 };
 
 static inline struct ax_device *to_ax_dev(struct net_device *dev)
 {
 	struct ei_device *ei_local = netdev_priv(dev);
 	return (struct ax_device *)(ei_local + 1);
+}
+
+/* These functions guarantee that the iomem is accessed with 32 bit
+   cycles only. z_memcpy_fromio / z_memcpy_toio don't */
+static void z_memcpy_fromio32(void *dst, const void __iomem *src, size_t bytes)
+{
+	while(bytes > 32)
+	{
+		asm __volatile__ (
+                    "movem.l (%0)+,%%d0-%%d7\n"
+		    "movem.l %%d0-%%d7,(%1)\n"
+		    "adda.l #32,%1" : "=a"(src), "=a"(dst)
+		    : "0"(src), "1"(dst) : "d0","d1","d2","d3","d4","d5","d6","d7","memory");
+		bytes -= 32;
+	}
+	while(bytes)
+	{
+		*(uint32_t*)dst = z_readl(src);
+		src += 4;
+		dst += 4;
+		bytes -= 4;
+	}
+}
+
+static void z_memcpy_toio32(void __iomem *dst, const void *src, size_t bytes)
+{
+	while(bytes)
+	{
+		z_writel(*(const uint32_t*)src, dst);
+		src += 4;
+		dst += 4;
+		bytes -= 4;
+	}
+}
+
+static void xs100_write(struct net_device *dev, const void *src, unsigned count)
+{
+	struct ei_device *ei_local = netdev_priv(dev);
+	struct ax_device *ax = to_ax_dev(dev);
+	/* copy whole blocks */
+	while(count > XS100_8390_DATA_AREA_SIZE)
+	{
+		z_memcpy_toio32(ax->xs100writefifo, src, XS100_8390_DATA_AREA_SIZE);
+		src += XS100_8390_DATA_AREA_SIZE;
+		count -= XS100_8390_DATA_AREA_SIZE;
+	}
+	/* copy whole dwords */
+	z_memcpy_toio32(ax->xs100writefifo, src, count & ~3);
+	src += count & ~3;
+	if(count & 2)
+	{
+		ei_outw(*(uint16_t*)src, ei_local->mem + NE_DATAPORT);
+		src += 2;
+	}
+	if(count & 1)
+	{
+		ei_outb(*(uint8_t*)src, ei_local->mem + NE_DATAPORT);
+	}
+}
+
+static void xs100_read(struct net_device *dev, void *dst, unsigned count)
+{
+	struct ei_device *ei_local = netdev_priv(dev);
+	struct ax_device *ax = to_ax_dev(dev);
+	/* copy whole blocks */
+	while(count > XS100_8390_DATA_AREA_SIZE)
+	{
+		z_memcpy_fromio32(dst, ax->xs100readfifo, XS100_8390_DATA_AREA_SIZE);
+		dst += XS100_8390_DATA_AREA_SIZE;
+		count -= XS100_8390_DATA_AREA_SIZE;
+	}
+	/* copy whole dwords */
+	z_memcpy_fromio32(dst, ax->xs100readfifo, count & ~3);
+	dst += count & ~3;
+	if(count & 2)
+	{
+		*(uint16_t*)dst = ei_inw(ei_local->mem + NE_DATAPORT);
+		dst += 2;
+	}
+	if(count & 1)
+	{
+		*(uint8_t*)dst = ei_inb(ei_local->mem + NE_DATAPORT);
+	}
 }
 
 /*
@@ -199,12 +297,7 @@ static void ax_get_8390_hdr(struct net_device *dev, struct e8390_pkt_hdr *hdr,
 	ei_outb(ring_page, nic_base + EN0_RSARHI);
 	ei_outb(E8390_RREAD+E8390_START, nic_base + NE_CMD);
 
-	if (ei_local->word16)
-		ioread16_rep(nic_base + NE_DATAPORT, hdr,
-			     sizeof(struct e8390_pkt_hdr) >> 1);
-	else
-		ioread8_rep(nic_base + NE_DATAPORT, hdr,
-			    sizeof(struct e8390_pkt_hdr));
+	xs100_read(dev, hdr, sizeof(struct e8390_pkt_hdr));
 
 	ei_outb(ENISR_RDC, nic_base + EN0_ISR);	/* Ack intr. */
 	ei_local->dmaing &= ~0x01;
@@ -245,14 +338,7 @@ static void ax_block_input(struct net_device *dev, int count,
 	ei_outb(ring_offset >> 8, nic_base + EN0_RSARHI);
 	ei_outb(E8390_RREAD+E8390_START, nic_base + NE_CMD);
 
-	if (ei_local->word16) {
-		ioread16_rep(nic_base + NE_DATAPORT, buf, count >> 1);
-		if (count & 0x01)
-			buf[count-1] = ei_inb(nic_base + NE_DATAPORT);
-
-	} else {
-		ioread8_rep(nic_base + NE_DATAPORT, buf, count);
-	}
+	xs100_read(dev, buf, count);
 
 	ei_local->dmaing &= ~1;
 }
@@ -294,10 +380,8 @@ static void ax_block_output(struct net_device *dev, int count,
 	ei_outb(start_page, nic_base + EN0_RSARHI);
 
 	ei_outb(E8390_RWRITE+E8390_START, nic_base + NE_CMD);
-	if (ei_local->word16)
-		iowrite16_rep(nic_base + NE_DATAPORT, buf, count >> 1);
-	else
-		iowrite8_rep(nic_base + NE_DATAPORT, buf, count);
+
+	xs100_write(dev, buf, count);
 
 	dma_start = jiffies;
 
@@ -825,6 +909,8 @@ static void ax_remove(struct zorro_dev *zdev)
 
 	unregister_netdev(dev);
 
+	z_iounmap(to_ax_dev(dev)->data_area);
+	release_mem_region(zdev->resource.start + XS100_8390_DATA32_BASE, XS100_8390_DATA32_SIZE);
 	z_iounmap(ei_local->mem);
 	release_mem_region(zdev->resource.start, XS100_8390_BASE + 4*0x20);
 
@@ -873,7 +959,7 @@ static int ax_probe(struct zorro_dev *zdev, const struct zorro_device_id *ent)
 	for (ret = 0; ret < 0x20; ret++)
 		ax->reg_offsets[ret] = 4 * ret + XS100_8390_BASE;
 
-	if (!request_mem_region(zdev->resource.start, XS100_8390_BASE + 4*0x20, "X-Surf-100")) {
+	if (!request_mem_region(zdev->resource.start, XS100_8390_BASE + 4*0x20, "X-Surf 100 8390 registers")) {
 		dev_err(&zdev->dev, "cannot reserve registers\n");
 		ret = -ENXIO;
 		goto exit_mem;
@@ -888,7 +974,26 @@ static int ax_probe(struct zorro_dev *zdev, const struct zorro_device_id *ent)
 		ret = -ENXIO;
 		goto exit_req;
 	}
+
+	if (!request_mem_region(zdev->resource.start + XS100_8390_DATA32_BASE, XS100_8390_DATA32_SIZE, "X-Surf 100 32-bit data access")) {
+		dev_err(&zdev->dev, "cannot reserve 32-bit area\n");
+		ret = -ENXIO;
+		goto exit_mem2;
+	}
+
+	ax->data_area = z_ioremap(zdev->resource.start + XS100_8390_DATA32_BASE, XS100_8390_DATA32_SIZE);
+
+	if(ax->data_area == NULL)
+	{
+		dev_err(&zdev->dev, "Cannot ioremap area %pR (32-bit access)\n", (void*)zdev->resource.start + XS100_8390_DATA32_BASE);
+
+		ret = -ENXIO;
+		goto exit_req2;
+	}
+
 	ax->xs100irqstatusreg = (char __iomem*)ei_local->mem + XS100_IRQSTATUS_BASE;
+	ax->xs100readfifo = ax->data_area + XS100_8390_DATA_READ32_BASE;
+	ax->xs100writefifo = ax->data_area + XS100_8390_DATA_WRITE32_BASE;
 
 	/* got resources, now initialise and register device */
 	ret = ax_init_dev(dev);
@@ -896,6 +1001,12 @@ static int ax_probe(struct zorro_dev *zdev, const struct zorro_device_id *ent)
 		return 0;
 
 	z_iounmap(ei_local->mem);
+
+ exit_req2:
+	release_mem_region(zdev->resource.start + XS100_8390_DATA32_BASE, XS100_8390_DATA32_SIZE);
+
+ exit_mem2:
+	z_iounmap(ax->data_area);
 
  exit_req:
 	release_mem_region(zdev->resource.start, XS100_8390_BASE + 4*0x20);
