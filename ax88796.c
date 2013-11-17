@@ -18,7 +18,6 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/timer.h>
 #include <linux/netdevice.h>
@@ -28,6 +27,8 @@
 #include <linux/phy.h>
 #include <linux/eeprom_93cx6.h>
 #include <linux/slab.h>
+#include <linux/zorro.h>
+#include <asm/amigaints.h>
 
 #include <net/ax88796.h>
 
@@ -77,6 +78,9 @@ static unsigned char version[] = "ax88796.c: Copyright 2005,2007 Simtec Electron
 #define NESM_STOP_PG	0x80	/* Last page +1 of RX ring */
 
 #define AX_GPOC_PPDSET	BIT(6)
+
+/*  Base address of 8390 compatible registers in X-Surf 100 space */
+#define XS100_8390_BASE 0x800
 
 static int ax_mii_init(struct net_device *dev);
 
@@ -477,7 +481,7 @@ static int ax_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
 static void ax_get_drvinfo(struct net_device *dev,
 			   struct ethtool_drvinfo *info)
 {
-	struct platform_device *pdev = to_platform_device(dev->dev.parent);
+	struct zorro_dev *pdev = to_zorro_dev(dev->dev.parent);
 
 	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
 	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
@@ -618,7 +622,7 @@ static struct mdiobb_ops bb_ops = {
 
 static int ax_mii_init(struct net_device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev->dev.parent);
+	struct zorro_dev *pdev = to_zorro_dev(dev->dev.parent);
 	struct ei_device *ei_local = netdev_priv(dev);
 	struct ax_device *ax = to_ax_dev(dev);
 	int err, i;
@@ -799,29 +803,25 @@ static int ax_init_dev(struct net_device *dev)
 	return ret;
 }
 
-static int ax_remove(struct platform_device *pdev)
+static void ax_remove(struct zorro_dev *pdev)
 {
-	struct net_device *dev = platform_get_drvdata(pdev);
+	struct net_device *dev = zorro_get_drvdata(pdev);
 	struct ei_device *ei_local = netdev_priv(dev);
-	struct ax_device *ax = to_ax_dev(dev);
-	struct resource *mem;
 
 	unregister_netdev(dev);
 
-	iounmap(ei_local->mem);
-	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(mem->start, resource_size(mem));
-
-	if (ax->map2) {
-		iounmap(ax->map2);
-		mem = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-		release_mem_region(mem->start, resource_size(mem));
-	}
+	z_iounmap(ei_local->mem);
+	release_mem_region(pdev->resource.start, XS100_8390_BASE + 4*0x20);
 
 	free_netdev(dev);
-
-	return 0;
 }
+
+static const struct ax_plat_data xsurf100_plat_data = {
+	.flags = AXFLG_HAS_EEPROM,
+	.wordlength = 2,
+	.dcr_val = 0x48,
+	.rcr_val = 0x40,
+};
 
 /*
  * ax_probe
@@ -830,13 +830,11 @@ static int ax_remove(struct platform_device *pdev)
  * notify us of a new device to attach to. Allocate memory, find the
  * resources and information passed, and map the necessary registers.
  */
-static int ax_probe(struct platform_device *pdev)
+static int ax_probe(struct zorro_dev *pdev, const struct zorro_device_id *ent)
 {
 	struct net_device *dev;
 	struct ei_device *ei_local;
 	struct ax_device *ax;
-	struct resource *irq, *mem, *mem2;
-	unsigned long mem_size, mem2_size = 0;
 	int ret = 0;
 
 	dev = ax__alloc_ei_netdev(sizeof(struct ax_device));
@@ -848,83 +846,32 @@ static int ax_probe(struct platform_device *pdev)
 	ei_local = netdev_priv(dev);
 	ax = to_ax_dev(dev);
 
-	ax->plat = pdev->dev.platform_data;
-	platform_set_drvdata(pdev, dev);
+	ax->plat = &xsurf100_plat_data;
+	zorro_set_drvdata(pdev, dev);
 
 	ei_local->rxcr_base = ax->plat->rcr_val;
 
-	/* find the platform resources */
-	irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!irq) {
-		dev_err(&pdev->dev, "no IRQ specified\n");
-		ret = -ENXIO;
-		goto exit_mem;
-	}
+	dev->irq = IRQ_AMIGA_PORTS;
+	ax->irqflags = IRQF_SHARED;
 
-	dev->irq = irq->start;
-	ax->irqflags = irq->flags & IRQF_TRIGGER_MASK;
+	ei_local->reg_offset = ax->reg_offsets;
+	for (ret = 0; ret < 0x20; ret++)
+		ax->reg_offsets[ret] = 4 * ret + XS100_8390_BASE;
 
-	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!mem) {
-		dev_err(&pdev->dev, "no MEM specified\n");
-		ret = -ENXIO;
-		goto exit_mem;
-	}
-
-	mem_size = resource_size(mem);
-
-	/*
-	 * setup the register offsets from either the platform data or
-	 * by using the size of the resource provided
-	 */
-	if (ax->plat->reg_offsets)
-		ei_local->reg_offset = ax->plat->reg_offsets;
-	else {
-		ei_local->reg_offset = ax->reg_offsets;
-		for (ret = 0; ret < 0x18; ret++)
-			ax->reg_offsets[ret] = (mem_size / 0x18) * ret;
-	}
-
-	if (!request_mem_region(mem->start, mem_size, pdev->name)) {
+	if (!request_mem_region(pdev->resource.start, XS100_8390_BASE + 4*0x20, "X-Surf-100")) {
 		dev_err(&pdev->dev, "cannot reserve registers\n");
 		ret = -ENXIO;
 		goto exit_mem;
 	}
 
-	ei_local->mem = ioremap(mem->start, mem_size);
+	ei_local->mem = z_ioremap(pdev->resource.start, XS100_8390_BASE + 4*0x20);
 	dev->base_addr = (unsigned long)ei_local->mem;
 
 	if (ei_local->mem == NULL) {
-		dev_err(&pdev->dev, "Cannot ioremap area %pR\n", mem);
+		dev_err(&pdev->dev, "Cannot ioremap area %pR\n", (void*)pdev->resource.start);
 
 		ret = -ENXIO;
 		goto exit_req;
-	}
-
-	/* look for reset area */
-	mem2 = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	if (!mem2) {
-		if (!ax->plat->reg_offsets) {
-			for (ret = 0; ret < 0x20; ret++)
-				ax->reg_offsets[ret] = (mem_size / 0x20) * ret;
-		}
-	} else {
-		mem2_size = resource_size(mem2);
-
-		if (!request_mem_region(mem2->start, mem2_size, pdev->name)) {
-			dev_err(&pdev->dev, "cannot reserve registers\n");
-			ret = -ENXIO;
-			goto exit_mem1;
-		}
-
-		ax->map2 = ioremap(mem2->start, mem2_size);
-		if (!ax->map2) {
-			dev_err(&pdev->dev, "cannot map reset register\n");
-			ret = -ENXIO;
-			goto exit_mem2;
-		}
-
-		ei_local->reg_offset[0x1f] = ax->map2 - ei_local->mem;
 	}
 
 	/* got resources, now initialise and register device */
@@ -932,19 +879,10 @@ static int ax_probe(struct platform_device *pdev)
 	if (!ret)
 		return 0;
 
-	if (!ax->map2)
-		goto exit_mem1;
-
-	iounmap(ax->map2);
-
- exit_mem2:
-	release_mem_region(mem2->start, mem2_size);
-
- exit_mem1:
-	iounmap(ei_local->mem);
+	z_iounmap(ei_local->mem);
 
  exit_req:
-	release_mem_region(mem->start, mem_size);
+	release_mem_region(pdev->resource.start, XS100_8390_BASE + 4*0x20);
 
  exit_mem:
 	free_netdev(dev);
@@ -952,56 +890,22 @@ static int ax_probe(struct platform_device *pdev)
 	return ret;
 }
 
-/* suspend and resume */
+#define ZORRO_PROD_INDIVIDUAL_COMPUTERS_X_SURF100 ZORRO_ID(INDIVIDUAL_COMPUTERS, 0x64, 0)
+static struct zorro_device_id xsurf100_zorro_tbl[] = {
+	{ ZORRO_PROD_INDIVIDUAL_COMPUTERS_X_SURF100, },
+	{ 0 }
+};
+MODULE_DEVICE_TABLE(zorro, xsurf100_zorro_tbl);
 
-#ifdef CONFIG_PM
-static int ax_suspend(struct platform_device *dev, pm_message_t state)
-{
-	struct net_device *ndev = platform_get_drvdata(dev);
-	struct ax_device *ax = to_ax_dev(ndev);
-
-	ax->resume_open = ax->running;
-
-	netif_device_detach(ndev);
-	ax_close(ndev);
-
-	return 0;
-}
-
-static int ax_resume(struct platform_device *pdev)
-{
-	struct net_device *ndev = platform_get_drvdata(pdev);
-	struct ax_device *ax = to_ax_dev(ndev);
-
-	ax_initial_setup(ndev, netdev_priv(ndev));
-	ax_NS8390_init(ndev, ax->resume_open);
-	netif_device_attach(ndev);
-
-	if (ax->resume_open)
-		ax_open(ndev);
-
-	return 0;
-}
-
-#else
-#define ax_suspend NULL
-#define ax_resume NULL
-#endif
-
-static struct platform_driver axdrv = {
-	.driver	= {
-		.name		= "ax88796",
-		.owner		= THIS_MODULE,
-	},
+static struct zorro_driver xsurf100_driver = {
+	.name		= "xsurf100",
+	.id_table	= xsurf100_zorro_tbl,
 	.probe		= ax_probe,
 	.remove		= ax_remove,
-	.suspend	= ax_suspend,
-	.resume		= ax_resume,
 };
 
-module_platform_driver(axdrv);
+module_driver(xsurf100_driver, zorro_register_driver, zorro_unregister_driver);
 
-MODULE_DESCRIPTION("AX88796 10/100 Ethernet platform driver");
-MODULE_AUTHOR("Ben Dooks, <ben@simtec.co.uk>");
+MODULE_DESCRIPTION("X-Surf 100 driver");
+MODULE_AUTHOR("Michael Karcher <kernel@mkarcher.dialup.fu-berlin.de>");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:ax88796");
