@@ -481,11 +481,11 @@ static int ax_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
 static void ax_get_drvinfo(struct net_device *dev,
 			   struct ethtool_drvinfo *info)
 {
-	struct zorro_dev *pdev = to_zorro_dev(dev->dev.parent);
+	struct zorro_dev *zdev = to_zorro_dev(dev->dev.parent);
 
 	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
 	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pdev->name, sizeof(info->bus_info));
+	strlcpy(info->bus_info, zdev->name, sizeof(info->bus_info));
 }
 
 static int ax_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
@@ -622,7 +622,7 @@ static struct mdiobb_ops bb_ops = {
 
 static int ax_mii_init(struct net_device *dev)
 {
-	struct zorro_dev *pdev = to_zorro_dev(dev->dev.parent);
+	struct zorro_dev *zdev = to_zorro_dev(dev->dev.parent);
 	struct ei_device *ei_local = netdev_priv(dev);
 	struct ax_device *ax = to_ax_dev(dev);
 	int err, i;
@@ -638,7 +638,7 @@ static int ax_mii_init(struct net_device *dev)
 	ax->mii_bus->name = "ax88796_mii_bus";
 	ax->mii_bus->parent = dev->dev.parent;
 	snprintf(ax->mii_bus->id, MII_BUS_ID_SIZE, "%s-%x",
-		pdev->name, pdev->id);
+		zdev->name, zdev->id);
 
 	ax->mii_bus->irq = kmalloc(sizeof(int) * PHY_MAX_ADDR, GFP_KERNEL);
 	if (!ax->mii_bus->irq) {
@@ -803,15 +803,15 @@ static int ax_init_dev(struct net_device *dev)
 	return ret;
 }
 
-static void ax_remove(struct zorro_dev *pdev)
+static void ax_remove(struct zorro_dev *zdev)
 {
-	struct net_device *dev = zorro_get_drvdata(pdev);
+	struct net_device *dev = zorro_get_drvdata(zdev);
 	struct ei_device *ei_local = netdev_priv(dev);
 
 	unregister_netdev(dev);
 
 	z_iounmap(ei_local->mem);
-	release_mem_region(pdev->resource.start, XS100_8390_BASE + 4*0x20);
+	release_mem_region(zdev->resource.start, XS100_8390_BASE + 4*0x20);
 
 	free_netdev(dev);
 }
@@ -830,7 +830,7 @@ static const struct ax_plat_data xsurf100_plat_data = {
  * notify us of a new device to attach to. Allocate memory, find the
  * resources and information passed, and map the necessary registers.
  */
-static int ax_probe(struct zorro_dev *pdev, const struct zorro_device_id *ent)
+static int ax_probe(struct zorro_dev *zdev, const struct zorro_device_id *ent)
 {
 	struct net_device *dev;
 	struct ei_device *ei_local;
@@ -842,12 +842,12 @@ static int ax_probe(struct zorro_dev *pdev, const struct zorro_device_id *ent)
 		return -ENOMEM;
 
 	/* ok, let's setup our device */
-	SET_NETDEV_DEV(dev, &pdev->dev);
+	SET_NETDEV_DEV(dev, &zdev->dev);
 	ei_local = netdev_priv(dev);
 	ax = to_ax_dev(dev);
 
 	ax->plat = &xsurf100_plat_data;
-	zorro_set_drvdata(pdev, dev);
+	zorro_set_drvdata(zdev, dev);
 
 	ei_local->rxcr_base = ax->plat->rcr_val;
 
@@ -858,17 +858,17 @@ static int ax_probe(struct zorro_dev *pdev, const struct zorro_device_id *ent)
 	for (ret = 0; ret < 0x20; ret++)
 		ax->reg_offsets[ret] = 4 * ret + XS100_8390_BASE;
 
-	if (!request_mem_region(pdev->resource.start, XS100_8390_BASE + 4*0x20, "X-Surf-100")) {
-		dev_err(&pdev->dev, "cannot reserve registers\n");
+	if (!request_mem_region(zdev->resource.start, XS100_8390_BASE + 4*0x20, "X-Surf-100")) {
+		dev_err(&zdev->dev, "cannot reserve registers\n");
 		ret = -ENXIO;
 		goto exit_mem;
 	}
 
-	ei_local->mem = z_ioremap(pdev->resource.start, XS100_8390_BASE + 4*0x20);
+	ei_local->mem = z_ioremap(zdev->resource.start, XS100_8390_BASE + 4*0x20);
 	dev->base_addr = (unsigned long)ei_local->mem;
 
 	if (ei_local->mem == NULL) {
-		dev_err(&pdev->dev, "Cannot ioremap area %pR\n", (void*)pdev->resource.start);
+		dev_err(&zdev->dev, "Cannot ioremap area %pR\n", (void*)zdev->resource.start);
 
 		ret = -ENXIO;
 		goto exit_req;
@@ -882,7 +882,7 @@ static int ax_probe(struct zorro_dev *pdev, const struct zorro_device_id *ent)
 	z_iounmap(ei_local->mem);
 
  exit_req:
-	release_mem_region(pdev->resource.start, XS100_8390_BASE + 4*0x20);
+	release_mem_region(zdev->resource.start, XS100_8390_BASE + 4*0x20);
 
  exit_mem:
 	free_netdev(dev);
