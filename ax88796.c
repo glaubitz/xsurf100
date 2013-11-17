@@ -79,6 +79,7 @@ static unsigned char version[] = "ax88796.c: Copyright 2005,2007 Simtec Electron
 
 #define AX_GPOC_PPDSET	BIT(6)
 
+#define XS100_IRQSTATUS_BASE 0x40
 /*  Base address of 8390 compatible registers in X-Surf 100 space */
 #define XS100_8390_BASE 0x800
 
@@ -104,6 +105,8 @@ struct ax_device {
 	unsigned int irqflags;
 
 	u32 reg_offsets[0x20];
+
+	void __iomem *xs100irqstatusreg;
 };
 
 static inline struct ax_device *to_ax_dev(struct net_device *dev)
@@ -398,6 +401,18 @@ static void ax_phy_switch(struct net_device *dev, int on)
 	ei_outb(reg_gpoc, ei_local->mem + EI_SHIFT(0x17));
 }
 
+static irqreturn_t wrap_ax_ei_interrupt(int irq, void *dev_id)
+{
+	struct net_device *dev = dev_id;
+	struct ax_device *ax = to_ax_dev(dev);
+
+	/* handle shared IRQ nicely */
+	if(z_readw(ax->xs100irqstatusreg) & 0x8000)
+		return ax_ei_interrupt(irq, dev_id);
+	else
+		return IRQ_NONE;
+}
+
 static int ax_open(struct net_device *dev)
 {
 	struct ax_device *ax = to_ax_dev(dev);
@@ -409,7 +424,7 @@ static int ax_open(struct net_device *dev)
 	if (ret)
 		goto failed_request_irq;
 
-	ret = request_irq(dev->irq, ax_ei_interrupt, ax->irqflags,
+	ret = request_irq(dev->irq, wrap_ax_ei_interrupt, ax->irqflags,
 			  dev->name, dev);
 	if (ret)
 		goto failed_request_irq;
@@ -873,6 +888,7 @@ static int ax_probe(struct zorro_dev *zdev, const struct zorro_device_id *ent)
 		ret = -ENXIO;
 		goto exit_req;
 	}
+	ax->xs100irqstatusreg = (char __iomem*)ei_local->mem + XS100_IRQSTATUS_BASE;
 
 	/* got resources, now initialise and register device */
 	ret = ax_init_dev(dev);
