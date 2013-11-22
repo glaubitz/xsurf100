@@ -170,7 +170,7 @@ static void xs100_write(struct net_device *dev, const void *src, unsigned count)
 	/* provide 32-bit aligment to src */
 	if(likely((int)src & 2 && count >= 2))
 	{
-		ei_outw(*(uint16_t*)dst, ei_local->mem + NE_DATAPORT);
+		ei_outw(*(uint16_t*)src, ei_local->mem + NE_DATAPORT);
 		src += 2;
 		cnt -= 2;
 	}
@@ -204,7 +204,7 @@ static void xs100_read(struct net_device *dev, void *dst, unsigned count)
 	{
 		*(uint16_t*)dst = ei_inw(ei_local->mem + NE_DATAPORT);
 		dst += 2;
-		cnt -= 2;
+		count -= 2;
 	}
 	/* copy whole blocks */
 	while(count > XS100_8390_DATA_AREA_SIZE)
