@@ -172,7 +172,7 @@ static void xs100_write(struct net_device *dev, const void *src, unsigned count)
 	{
 		ei_outw(*(uint16_t*)src, ei_local->mem + NE_DATAPORT);
 		src += 2;
-		cnt -= 2;
+		count -= 2;
 	}
 	/* copy whole blocks */
 	while(count > XS100_8390_DATA_AREA_SIZE)
