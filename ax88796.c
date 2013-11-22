@@ -134,7 +134,7 @@ static inline struct ax_device *to_ax_dev(struct net_device *dev)
    cycles only. z_memcpy_fromio / z_memcpy_toio don't */
 static void z_memcpy_fromio32(void *dst, const void __iomem *src, size_t bytes)
 {
-	while(bytes > 32)
+/*	while(bytes > 32)
 	{
 		asm __volatile__ (
                     "movem.l (%0)+,%%d0-%%d7\n"
@@ -142,7 +142,7 @@ static void z_memcpy_fromio32(void *dst, const void __iomem *src, size_t bytes)
 		    "adda.l #32,%1" : "=a"(src), "=a"(dst)
 		    : "0"(src), "1"(dst) : "d0","d1","d2","d3","d4","d5","d6","d7","memory");
 		bytes -= 32;
-	}
+	}*/
 	while(bytes)
 	{
 		*(uint32_t*)dst = z_readl(src);
