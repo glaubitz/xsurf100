@@ -209,7 +209,7 @@ static void xs100_read(struct net_device *dev, void *dst, unsigned count)
 	/* copy whole blocks */
 	while(count > XS100_8390_DATA_AREA_SIZE)
 	{
-		z_memcpy_fromio32(dst, ax->xs100readfifo, XS100_8390_DATA_AREA_SIZE);
+		z_memcpy_fromio(dst, ax->xs100readfifo, XS100_8390_DATA_AREA_SIZE);
 		dst += XS100_8390_DATA_AREA_SIZE;
 		count -= XS100_8390_DATA_AREA_SIZE;
 	}
