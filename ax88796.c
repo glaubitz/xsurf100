@@ -130,6 +130,11 @@ static inline struct ax_device *to_ax_dev(struct net_device *dev)
 	return (struct ax_device *)(ei_local + 1);
 }
 
+static inline void z_memcpy_fromio32(void *dst, const void __iomem *src)
+{
+	asm __volatile__ (".chip 68040\n\tmove16 (%0)+, (%1)+\n\t.chip68k" : "=a"(src), "=a"(dst) : "0"(src), "1"(dst) : "memory");
+}
+
 /* These functions guarantee that the iomem is accessed with 32 bit
    cycles only. z_memcpy_fromio / z_memcpy_toio don't */
 static void z_memcpy_fromio32(void *dst, const void __iomem *src, size_t bytes)
@@ -199,6 +204,9 @@ static void xs100_read(struct net_device *dev, void *dst, unsigned count)
 {
 	struct ei_device *ei_local = netdev_priv(dev);
 	struct ax_device *ax = to_ax_dev(dev);
+	/* we do not handle odd destination addresses at all, yet */
+	if(unlikely((int)dst & 1))
+		return;
 	/* provide 32-bit aligment to dst */
 	if(likely((int)dst & 2 && count >= 2))
 	{
@@ -206,15 +214,37 @@ static void xs100_read(struct net_device *dev, void *dst, unsigned count)
 		dst += 2;
 		count -= 2;
 	}
-	/* copy whole blocks */
-	while(count > XS100_8390_DATA_AREA_SIZE)
+	if(count >= 12)
 	{
-		z_memcpy_fromio(dst, ax->xs100readfifo, XS100_8390_DATA_AREA_SIZE);
-		dst += XS100_8390_DATA_AREA_SIZE;
-		count -= XS100_8390_DATA_AREA_SIZE;
+		/* provide 128-bit (16 byte) alignment to dst */
+		switch(((unsigned)dst >> 2) & 3)
+		{
+			case 1:
+				*(uint32_t*)dst = ei_inl(ax->xs100readfifo);
+				dst += 4;
+				count -= 4;
+				/* FALLTRHOUGH */
+			case 2:
+				*(uint32_t*)dst = ei_inl(ax->xs100readfifo);
+				dst += 4;
+				count -= 4;
+				/* FALLTRHOUGH */
+			case 3:
+				*(uint32_t*)dst = ei_inl(ax->xs100readfifo);
+				dst += 4;
+				count -= 4;
+				/* FALLTRHOUGH */
+			case 0:
+		}
+		while(count > 16)
+		{
+			z_memcpy_fromio_move16(dst, ax->xs100readfifo);
+			dst += 16;
+			count -= 16;
+		}
 	}
 	/* copy whole dwords */
-	z_memcpy_fromio32(dst, ax->xs100readfifo, count & ~3);
+	z_memcpy_fromio(dst, ax->xs100readfifo, count & ~3);
 	dst += count & ~3;
 	if(count & 2)
 	{
