@@ -54,6 +54,9 @@
 #define ei_inw(_a) z_readw(ax_convert_addr(_a))
 #define ei_outw(_v, _a) z_writew(_v, ax_convert_addr(_a))
 
+#define ei_inl(_a) z_readl(ax_convert_addr(_a))
+#define ei_outl(_v, _a) z_writel(_v, ax_convert_addr(_a))
+
 #define ei_inb_p(_a) ei_inb(_a)
 #define ei_outb_p(_v, _a) ei_outb(_v, _a)
 
@@ -130,11 +133,12 @@ static inline struct ax_device *to_ax_dev(struct net_device *dev)
 	return (struct ax_device *)(ei_local + 1);
 }
 
-static inline void z_memcpy_fromio32(void *dst, const void __iomem *src)
+static inline void z_memcpy_move16(void *dst, const void __iomem *src)
 {
 	asm __volatile__ (".chip 68040\n\tmove16 (%0)+, (%1)+\n\t.chip68k" : "=a"(src), "=a"(dst) : "0"(src), "1"(dst) : "memory");
 }
 
+#if 0
 /* These functions guarantee that the iomem is accessed with 32 bit
    cycles only. z_memcpy_fromio / z_memcpy_toio don't */
 static void z_memcpy_fromio32(void *dst, const void __iomem *src, size_t bytes)
@@ -156,6 +160,7 @@ static void z_memcpy_fromio32(void *dst, const void __iomem *src, size_t bytes)
 		bytes -= 4;
 	}
 }
+#endif
 
 static void z_memcpy_toio32(void __iomem *dst, const void *src, size_t bytes)
 {
@@ -234,7 +239,7 @@ static void xs100_read(struct net_device *dev, void *dst, unsigned count)
 				dst += 4;
 				count -= 4;
 				/* FALLTRHOUGH */
-			case 0:
+			case 0:;
 		}
 		while(count > 16)
 		{
