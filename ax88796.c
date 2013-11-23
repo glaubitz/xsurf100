@@ -135,7 +135,7 @@ static inline struct ax_device *to_ax_dev(struct net_device *dev)
 
 static inline void z_memcpy_fromio_move16(void *dst, const void __iomem *src)
 {
-	asm __volatile__ (".chip 68040\n\tmove16 (%0)+, (%1)+\n\t.chip68k" : "=a"(src), "=a"(dst) : "0"(src), "1"(dst) : "memory");
+	asm __volatile__ (".chip 68040\n\tmove16 (%0)+, (%1)+\n\t.chip 68k" : "=a"(src), "=a"(dst) : "0"(src), "1"(dst) : "memory");
 }
 
 #if 0
